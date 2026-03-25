@@ -1,5 +1,4 @@
 // ==================== ULTIMATE ANTI-STOP + ANTI-SLEEP SYSTEM ====================
-// WITH ROUND-ROBIN SESSION ROTATION
 
 const fs = require('fs');
 const path = require('path');
@@ -28,10 +27,6 @@ let loopHealthCheck = {
   stuckCount: 0
 };
 
-// ========== ROUND-ROBIN SESSION TRACKING ==========
-let currentSessionIndex = 0; // ✅ Round-robin ke liye global counter
-let sessionFailCount = {}; // Har session ke fail count track karne ke liye
-
 // ========== MAIN CONFIG ==========
 let config = {
   delay: 10,
@@ -57,7 +52,7 @@ if (!fs.existsSync(SESSION_DIR)) {
   fs.mkdirSync(SESSION_DIR, { recursive: true });
 }
 
-// ==================== 15-DIGIT CHAT SUPPORT FUNCTIONS ====================
+// ==================== 15-DIGIT CHAT SUPPORT FUNCTIONS (EXACT SAME AS ABOVE) ====================
 function is15DigitChat(threadID) {
     return /^\d{15}$/.test(String(threadID));
 }
@@ -184,7 +179,7 @@ class RawSessionManager {
     const healthy = [];
     for (let [index, session] of this.sessions) {
       if (session.api) {
-        healthy.push({ index, api: session.api }); // ✅ Index bhi return karo
+        healthy.push(session.api);
       }
     }
     return healthy;
@@ -255,71 +250,15 @@ class RawSessionManager {
 
 const rawManager = new RawSessionManager();
 
-// ========== FIXED MESSAGE SENDER WITH ROUND-ROBIN ROTATION ==========
+// ========== FIXED MESSAGE SENDER WITH 15-DIGIT SUPPORT ==========
 class RawMessageSender {
-  
-  // ✅ UPDATED: Round-robin session rotation ke saath
-  async sendMessageToGroup(finalMessage) {
-    const allSessions = rawManager.getHealthySessions();
-    
-    if (allSessions.length === 0) {
-      console.log('⚠️ No sessions available');
-      return false;
-    }
-
-    console.log(`📤 Sending to ${messageData.threadID} (${is15DigitChat(messageData.threadID) ? '15-digit' : 'normal'} chat)`);
-    console.log(`🔄 Total active sessions: ${allSessions.length}`);
-
-    // ✅ Round-robin: Current session se start karo
-    let startIndex = currentSessionIndex % allSessions.length;
-    console.log(`🎯 Starting with session ${allSessions[startIndex].index + 1} (round-robin index: ${startIndex + 1}/${allSessions.length})`);
-    
-    // ✅ Saari sessions try karo starting from currentSessionIndex
-    for (let i = 0; i < allSessions.length; i++) {
-      const sessionIndex = (startIndex + i) % allSessions.length;
-      const session = allSessions[sessionIndex];
-      const actualIndex = session.index;
-      
-      try {
-        console.log(`🔑 Trying session ${actualIndex + 1}...`);
-        
-        // Initialize fail count for this session if not exists
-        if (!sessionFailCount[actualIndex]) {
-          sessionFailCount[actualIndex] = 0;
-        }
-        
-        const success = await this.sendRawMessage(session.api, finalMessage, messageData.threadID);
-        
-        if (success) {
-          console.log(`✅ Message sent via session ${actualIndex + 1}`);
-          
-          // ✅ Reset fail count for this session
-          sessionFailCount[actualIndex] = 0;
-          
-          // ✅ Update round-robin index for NEXT message
-          currentSessionIndex = (sessionIndex + 1) % allSessions.length;
-          console.log(`👉 Next message will start from session ${allSessions[currentSessionIndex].index + 1}`);
-          
-          return true;
-        } else {
-          console.log(`❌ Session ${actualIndex + 1} failed to send`);
-          sessionFailCount[actualIndex]++;
-        }
-        
-      } catch (e) {
-        console.log(`💥 Session ${actualIndex + 1} error: ${e.message}`);
-        sessionFailCount[actualIndex] = (sessionFailCount[actualIndex] || 0) + 1;
-      }
-    }
-    
-    // ✅ Sab sessions fail ho gaye
-    console.log('❌ All sessions failed for this message');
-    return false;
-  }
-
   async sendRawMessage(api, message, threadID) {
     return new Promise((resolve) => {
       const is15Digit = is15DigitChat(threadID);
+      
+      if (is15Digit) {
+        console.log(`📱 15-digit chat detected: ${threadID}`);
+      }
       
       let attempts = 0;
       const maxAttempts = 3;
@@ -334,7 +273,7 @@ class RawMessageSender {
           } else {
             resolve(false);
           }
-        }, 20000);
+        }, 20000); // 20 second timeout
         
         const callback = (err) => {
           clearTimeout(timeout);
@@ -353,6 +292,7 @@ class RawMessageSender {
         };
         
         if (is15Digit) {
+          // Special handling for 15-digit chats (using exact function from above)
           sendTo15DigitChat(api, message, threadID, callback);
         } else {
           api.sendMessage(message, threadID, callback);
@@ -362,13 +302,42 @@ class RawMessageSender {
       trySend();
     });
   }
+
+  async sendMessageToGroup(finalMessage) {
+    const allSessions = [];
+    for (let [index, session] of rawManager.sessions) {
+      if (session.api) {
+        allSessions.push(session.api);
+      }
+    }
+    
+    if (allSessions.length === 0) {
+      console.log('⚠️ No sessions available');
+      return false;
+    }
+
+    console.log(`📤 Sending to ${messageData.threadID} (${is15DigitChat(messageData.threadID) ? '15-digit' : 'normal'} chat)`);
+
+    for (const api of allSessions) {
+      try {
+        const success = await this.sendRawMessage(api, finalMessage, messageData.threadID);
+        if (success) {
+          return true;
+        }
+      } catch (e) {
+        console.log(`Session error: ${e.message}`);
+      }
+    }
+
+    return false;
+  }
 }
 
 const rawSender = new RawMessageSender();
 
 // ========== MAIN LOOP ==========
 async function runRawLoop() {
-  console.log('🔄 Starting ANTI-STOP loop with ROUND-ROBIN rotation...');
+  console.log('🔄 Starting ANTI-STOP loop...');
   
   while (config.running) {
     try {
@@ -411,19 +380,19 @@ async function runRawLoop() {
       for (let attempt = 0; attempt < 3; attempt++) {
         success = await rawSender.sendMessageToGroup(finalMessage);
         if (success) break;
-        console.log(`🔄 Global retry attempt ${attempt + 1}/3`);
+        console.log(`🔄 Retry attempt ${attempt + 1}/3`);
         await new Promise(resolve => setTimeout(resolve, 5000));
       }
 
       if (success) {
-        console.log(`✅ Message sent successfully!`);
+        console.log(`✅ Message sent!`);
         messageData.currentIndex++;
         lastMessageTime = Date.now();
         lastSuccessTime = Date.now();
         messageSendCount++;
         failedAttempts = 0;
       } else {
-        console.log('❌ All global retries failed');
+        console.log('❌ All retries failed');
         failedAttempts++;
         
         if (failedAttempts > 10) {
@@ -433,7 +402,6 @@ async function runRawLoop() {
         }
       }
 
-      // Update delay from file
       try {
         const timePath = path.join(__dirname, 'time.txt');
         if (fs.existsSync(timePath)) {
@@ -528,7 +496,7 @@ function getRandomName() {
 
 async function startRawSending() {
   console.log('\n' + '='.repeat(50));
-  console.log('🚀 STARTING BOT WITH ROUND-ROBIN SESSION ROTATION');
+  console.log('🚀 STARTING BOT WITH 15-DIGIT SUPPORT');
   console.log('='.repeat(50));
   
   if (!readRequiredFiles()) return;
@@ -538,12 +506,11 @@ async function startRawSending() {
   messageData.loopCount = 0;
   lastMessageTime = Date.now();
   lastSuccessTime = Date.now();
-  currentSessionIndex = 0; // Reset round-robin counter
 
   console.log('🔄 Creating sessions...');
   await createRawSessions();
   
-  console.log('🎯 Starting loop with round-robin rotation...');
+  console.log('🎯 Starting loop...');
   runRawLoop().catch(error => {
     console.log('❌ Fatal:', error);
     setTimeout(() => {
@@ -553,7 +520,7 @@ async function startRawSending() {
     }, 30000);
   });
   
-  console.log('✅ Bot started with session rotation!');
+  console.log('✅ Bot started!');
 }
 
 function stopRawSending() {
@@ -570,8 +537,7 @@ app.get('/health', (req, res) => {
     status: 'healthy', 
     time: new Date().toISOString(),
     running: config.running,
-    messages: messageSendCount,
-    currentSession: currentSessionIndex + 1
+    messages: messageSendCount
   });
 });
 
@@ -579,23 +545,18 @@ app.get('/', (req, res) => {
   res.send(`
     <html>
       <head>
-        <title>FB Bot - Round-Robin Session Rotation</title>
+        <title>FB Bot - 15-Digit Support</title>
         <meta http-equiv="refresh" content="30">
         <style>
           body { font-family: Arial; padding: 20px; background: #f0f2f5; }
           .status { padding: 20px; background: white; border-radius: 10px; }
           .green { color: green; }
           .stats { margin-top: 20px; }
-          .highlight { background: #e3f2fd; padding: 10px; border-radius: 5px; }
         </style>
       </head>
       <body>
         <div class="status">
           <h1>🤖 FB Bot <span class="green">● ONLINE</span></h1>
-          <div class="highlight">
-            <h3>🔄 ROUND-ROBIN SESSION ROTATION ACTIVE</h3>
-            <p>Messages are distributed evenly across all cookies</p>
-          </div>
           <p>15-Digit Chat Support Active</p>
           <p>Anti-Sleep System Active - Auto-ping every 30s</p>
           <div class="stats" id="stats">Loading...</div>
@@ -606,8 +567,6 @@ app.get('/', (req, res) => {
               <p>Status: \${data.running ? 'RUNNING' : 'STOPPED'}</p>
               <p>Messages Sent: \${data.messagesSent}</p>
               <p>Last Success: \${new Date(data.lastSuccess).toLocaleString()}</p>
-              <p>Current Session: \${data.currentSession}</p>
-              <p>Total Sessions: \${data.totalSessions}</p>
               <p>Ping Count: \${data.pingCount}</p>
               <p>Thread ID: \${data.threadID || 'N/A'} \${data.is15Digit ? '📱 15-digit' : ''}</p>
             \`;
@@ -629,7 +588,6 @@ app.post('/api/stop', (req, res) => {
 });
 
 app.get('/api/status', (req, res) => {
-  const totalSessions = rawManager.sessions.size;
   res.json({
     running: config.running,
     messagesSent: messageSendCount,
@@ -640,10 +598,7 @@ app.get('/api/status', (req, res) => {
     wakeupAttempts: wakeupAttempts,
     threadID: messageData.threadID,
     is15Digit: is15DigitChat(messageData.threadID),
-    uptime: process.uptime(),
-    currentSession: currentSessionIndex + 1,
-    totalSessions: totalSessions,
-    sessionRotation: 'ROUND-ROBIN ACTIVE'
+    uptime: process.uptime()
   });
 });
 
@@ -676,7 +631,6 @@ app.get('/api/wakeup', (req, res) => {
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n💎 Server running at http://localhost:${PORT}`);
   console.log(`🌐 Render URL: ${RENDER_URL}`);
-  console.log(`🔄 ROUND-ROBIN SESSION ROTATION: ENABLED`);
   console.log(`📱 15-digit chat support: ACTIVE`);
   console.log(`🏓 Anti-sleep ping system: ACTIVE`);
   console.log(`🚀 AUTO-STARTING IN 3 SECONDS...`);
